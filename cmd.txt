@@ -1,0 +1,3 @@
+docker build -t blemi/nfl .
+
+docker run -v /Users/brent/projects/nfl:/home/jovyan/work -e GRANT_SUDO=yes -p 8888:8888 blemi/nfl start-notebook.sh --NotbookApp.token=''
