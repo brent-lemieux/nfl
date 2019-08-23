@@ -144,7 +144,7 @@ def format_score_differential(game, drive):
     # print(start_quarter, type(start_quarter))
     if str(start_quarter) == '1':
         return 0
-    quarters = range(1, start_quarter + 1)
+    quarters = range(1, start_quarter)
     home_scores = [game['home']['score'][str(quarter)] for quarter in quarters]
     away_scores = [game['away']['score'][str(quarter)] for quarter in quarters]
     return str(np.sum(home_scores) - np.sum(away_scores))
