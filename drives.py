@@ -101,6 +101,8 @@ def parse_game_drives(game_dict, game_id):
             continue
         offensive_team = drive['posteam']
         defensive_team = home if home != drive['posteam'] else away
+        first_play_key = str(min([int(key) for key in drive['plays'].keys()]))
+        last_play_key = str(max([int(key) for key in drive['plays'].keys()]))
         drive_dict = dict(
             game_id=game_id,
             offensive_team=offensive_team,
@@ -117,6 +119,8 @@ def parse_game_drives(game_dict, game_id):
             result=drive['result'],
             n_plays=drive['numplays'],
             drive_time=drive['postime'],
+            first_play_desc=drive['plays'][first_play_key]['desc'],
+            last_play_desc=drive['plays'][last_play_key]['desc'],
             home_score_diff_last_quarter=format_score_differential(game, drive)
         )
         team_game_drives.append(drive_dict)
