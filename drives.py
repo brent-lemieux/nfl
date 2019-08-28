@@ -25,7 +25,7 @@ def season_drives_pipeline(season, url):
 def format_season_start_end(season):
     # Format the start and end date of the season in question.
     start = '{}0901'.format(season)
-    end = '{}0228'.format(season + 1)
+    end = '{}0220'.format(season + 1)
     return start, end
 
 
@@ -58,6 +58,12 @@ def get_drives(start, end, url):
             except Exception as e:
                 print(e)
                 failed = True
+                if game_date.weekday() == 6 and in_day_id <= 16:
+                    in_day_id += 1
+                    failed = False
+                if game_date.weekday() in [0, 2, 3, 5] and in_day_id <= 5:
+                    in_day_id += 1
+                    failed = False
         game_date += timedelta(days=1)
     return season_drives
 
@@ -158,8 +164,13 @@ def format_score_differential(game, drive):
 
 
 if __name__ == '__main__':
-    for season in range(2009, 2019):
-        drives = season_drives_pipeline(
-            season, 'http://www.nfl.com/liveupdate/game-center/'
-        )
-        json.dump(drives, open('data/%i_drives.json' % season, 'w'))
+    season = 2018
+    drives = season_drives_pipeline(
+        season, 'http://www.nfl.com/liveupdate/game-center/'
+    )
+    json.dump(drives, open('data/%i_drives.json' % season, 'w'))
+    # for season in range(2009, 2019):
+    #     drives = season_drives_pipeline(
+    #         season, 'http://www.nfl.com/liveupdate/game-center/'
+    #     )
+    #     json.dump(drives, open('data/%i_drives.json' % season, 'w'))

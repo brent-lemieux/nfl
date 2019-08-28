@@ -62,6 +62,10 @@ def get_games_data(start, end, url):
                     games_data[game_id] = get_game_summary(data[game_id])
                 except Exception as e:
                     print(game_id)
+            if game_date.weekday() == 6 and in_day_id <= 16:
+                failed = False
+            if game_date.weekday() in [0, 2, 3, 5] and in_day_id <= 5:
+                failed = False
             in_day_id += 1
         game_date += timedelta(days=1)
     return games_data
