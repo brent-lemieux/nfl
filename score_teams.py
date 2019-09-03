@@ -6,72 +6,117 @@ import numpy as np
 import pandas as pd
 
 
-def score_drives(start_season, end_season):
+def score_drives(start_season, end_season, exclude_playoffs=False,
+                 exclude_blowouts=False):
     """Score each drive from start_season to end_season."""
-    df = get_drives(start_season, end_season)
+    df = get_drives(
+        start_season, end_season, exclude_playoffs
+    )
     df = postprocess_drives(df)
     df['nfl_avg_score'] = df.groupby('start_yard_line_bin')\
         ['drive_score'].transform('mean')
     df['drive_score'] = df['drive_score'] - df['nfl_avg_score']
+    df['offensive_win'] = (
+        (df['offensive_team'] == df['home_team']).astype(int) *
+        (df['home_final_score'] > df['away_final_score']).astype(int) +
+        (df['offensive_team'] == df['away_team']).astype(int) *
+       ( df['away_final_score'] > df['home_final_score']).astype(int)
+    )
+    df['defensive_win'] = (
+        (df['defensive_team'] == df['home_team']).astype(int) *
+        (df['home_final_score'] > df['away_final_score']).astype(int) +
+        (df['defensive_team'] == df['away_team']).astype(int) *
+       ( df['away_final_score'] > df['home_final_score']).astype(int)
+    )
+    df['tie'] = (df['offensive_win'] + df['defensive_win'] == 0).astype(int)
+    if exclude_blowouts:
+        df['offensive_differential'] = (
+            df['offensive_team_score_start'] - df['defensive_team_score_start']
+        )
+        df = df.loc[
+            ~((np.abs(df['offensive_differential']) >= exclude_blowouts) &
+              (df['start_quarter'] == 4))
+        ]
     return df
 
 
 def aggregate_game_drives(start_season, end_season, side='offensive_team',
-                          opponent_strength=False):
-    """Score each game by aggregating drive scores by game_id and team.
-
-    Adjust for opponent strength if opponent_strength == True.
-    """
-    df = score_drives(start_season, end_season)
+                          exclude_playoffs=False, exclude_blowouts=False):
+    """Score each game by aggregating drive scores by game_id and team."""
+    df = score_drives(
+        start_season, end_season, exclude_playoffs, exclude_blowouts
+    )
     other = 'defensive_team' if side == 'offensive_team' else 'offensive_team'
-    gdf = df.groupby(['game_id', side, other, 'season'], as_index=False)['drive_score'].mean()
-    gdf = gdf.sort_values('drive_score', ascending=side == 'defensive_team')
-    if opponent_strength:
-        gdf = opponent_strength_adjustment(
-            gdf, start_season, end_season, side, other
-        )
+    groupby_list = ['game_id', side, other, 'home_team', 'away_team', 'season']
+    aggregate_list = ['drive_score', 'home_final_score', 'away_final_score',
+                      'offensive_win', 'defensive_win', 'tie']
+    gdf = df.groupby(groupby_list, as_index=False).agg(
+        {'drive_score': 'mean', 'home_final_score': 'mean',
+         'away_final_score': 'mean', 'offensive_win': 'mean',
+         'defensive_win': 'mean', 'tie': 'mean', 'is_touchdown': 'mean',
+         'drive_time': 'sum', 'drive_id': 'count'}
+    )
+    gdf = gdf.rename(
+        {'drive_id': 'drive_count', 'drive_time': 'possession_time'}, axis=1
+    )
+    gdf['avg_drive_time'] = gdf['possession_time'] / gdf['drive_count']
+    gdf = opponent_strength_adjustment(
+        gdf, start_season, end_season, side, other
+    )
+    columns = get_side_columns(side)
+    gdf = gdf.sort_values(columns, ascending=side == 'defensive_team')
     return gdf
 
 
 def aggregate_season_drives(start_season, end_season, side='offensive_team',
-                            opponent_strength=False):
-    """Score each season by aggregating game drive scores by season and team.
-
-    Adjust for opponent strength if opponent_strength == True.
-    """
+                            exclude_playoffs=False, exclude_blowouts=False):
+    """Score each season by aggregating game drive scores by season and
+    team."""
     gdf = aggregate_game_drives(start_season, end_season, side,
-                                opponent_strength)
-    if opponent_strength:
-        sdf = gdf.groupby(['season', side], as_index=False)[['drive_score', 'adj_drive_score']].mean()
-        sdf = sdf.sort_values('adj_drive_score', ascending=False)
-    else:
-        sdf = gdf.groupby(['season', side], as_index=False)['drive_score'].mean()
-        sdf = sdf.sort_values('drive_score')
+                                exclude_playoffs, exclude_blowouts)
+    columns = get_side_columns(side)
+    sdf = gdf.groupby(['season', side], as_index=False)[columns].mean()
+    sdf = sdf.sort_values(
+        columns, ascending=side == 'defensive_team'
+    )
     return sdf
 
 
-
-def opponent_strength_adjustment(gdf, start_season, end_season, side, other):
+def opponent_strength_adjustment(gdf, start_season, end_season, side, other,
+                                 n_iters=5, step_size=.2):
     # MAKE ADJUSTMENT BASED ON OPPONENT STRENGTH...
-    opponent_dict = defaultdict(dict)
-    opponent_df = aggregate_season_drives(start_season, end_season, side=other)
-    for season, team, score in opponent_df.values:
-        opponent_dict[season][team] = score
-    def get_opponent_score(row, opponent_dict):
-        # Get the defenses season average.
-        return opponent_dict[row['season']][row[other]]
-    opponent_score_func = partial(
-        get_opponent_score, opponent_dict=opponent_dict
-    )
-    gdf['opponent_adjustment'] = gdf.apply(opponent_score_func, axis=1)
-    gdf['adj_drive_score'] = gdf['drive_score'] - gdf['opponent_adjustment']
+    gdf['offensive_score'] = gdf['drive_score']
+    gdf['defensive_score'] = gdf['drive_score']
+    gdf['adj_offensive_score'] = gdf['drive_score']
+    gdf['adj_defensive_score'] = gdf['drive_score']
+    for i in range(n_iters):
+        gdf['offensive_adj'] = gdf.groupby(['season', 'defensive_team'])\
+            ['adj_defensive_score'].transform('mean')
+        gdf['defensive_adj'] = gdf.groupby(['season', 'offensive_team'])\
+            ['adj_offensive_score'].transform('mean')
+        gdf['adj_offensive_score'] = (
+            gdf['adj_offensive_score'] - (step_size * gdf['offensive_adj'])
+        )
+        gdf['adj_defensive_score'] = (
+            gdf['adj_defensive_score'] - (step_size * gdf['defensive_adj'])
+        )
+    gdf = gdf.drop(['offensive_adj', 'defensive_adj', 'offensive_score',
+                  'defensive_score'], axis=1)
     return gdf
 
 
-def get_drives(start_season, end_season):
+def get_side_columns(side):
+    if side == 'offensive_team':
+        columns = ['adj_offensive_score', 'drive_score']
+    else:
+        columns = ['adj_defensive_score', 'drive_score']
+    return columns
+
+
+def get_drives(start_season, end_season, exclude_playoffs):
     teams = [
         'PHI', 'ATL', 'BUF', 'BAL', 'CLE', 'PIT', 'IND', 'CIN', 'MIA',
-        'TEN', 'SF', 'MIN', 'HOU', 'NE', 'TB', 'NO', 'NYG', 'JAX', 'KC',
+        'TEN', 'SF', 'MIN', 'HOU', 'NE', 'TB', 'NO', 'NYG', 'JAX', 'gdf',
         'LAC', 'ARI', 'WAS', 'CAR', 'DAL', 'SEA', 'DEN', 'CHI', 'GB',
         'DET', 'NYJ', 'LA', 'OAK', 'JAC', 'SD', 'STL'
     ]
@@ -79,17 +124,28 @@ def get_drives(start_season, end_season):
     df = pd.DataFrame()
     for season in seasons:
         drives = json.load(open('./data/%i_drives.json' % season, 'r'))
-        sdf = preprocess_drives(drives)
+        sdf = preprocess_drives(drives, exclude_playoffs)
         sdf['season'] = season
         df = pd.concat((df, sdf))
     return df
 
 
-def preprocess_drives(drives):
+def preprocess_drives(drives, exclude_playoffs):
     """Preprocess drives for analysis."""
     df = pd.DataFrame(drives)
     df['drive_id'] = df.index
-    df = df.loc[~df['away_team'].isin(['APR', 'NPR', 'AFC', 'NFC', 'IRV', 'CRT'])].copy()
+    df['season'] = df['game_id'].map(get_season)
+
+    if 'home_score' in df.columns:
+        df['home_final_score'] = df['home_score']
+        df['away_final_score'] = df['away_score']
+        df =  df.drop(['home_score', 'away_score'], axis=1)
+
+    df = clean_games(df)
+
+    df = mark_playoffs(df)
+    if exclude_playoffs:
+        df = df.loc[df['is_playoffs'] == 0].copy()
 
     df['total_yards'] = df['penalty_yards'] + df['yards_gained']
     df['end_yard_line'] = df['start_yard_line'] + df['total_yards']
@@ -99,8 +155,53 @@ def preprocess_drives(drives):
     df = bin_yard_lines(df, binned_column='end_yard_line', prefix='end')
     df = bin_yard_lines(df, binned_column='next_start_yard_line', prefix='next_start')
 
-    df = add_offensive_scores(df)
-    df = subtract_defensive_scores(df)
+    df = mark_offensive_scores(df)
+    df = mark_dst_scores(df)
+    df = get_current_score(df)
+
+    df['drive_time'] = df['drive_time'].map(convert_drive_time)
+    df = format_final_scores(df)
+    return df
+
+
+def convert_drive_time(drive_time):
+    if drive_time:
+        minutes, seconds = [int(t) for t in drive_time.split(':')]
+        return minutes + seconds / 60
+    return None
+
+
+def get_season(game_id):
+    month = int(str(game_id)[4:6])
+    year = int(str(game_id)[:4])
+    if month > 8:
+        return year
+    else:
+        return year - 1
+
+
+def clean_games(df):
+    pro_bowl_teams = ['APR', 'NPR', 'AFC', 'NFC', 'IRV', 'CRT', 'RIC', 'SAN']
+    df = df.loc[~df['away_team'].isin(pro_bowl_teams)].copy()
+    team_columns = [
+        'away_team', 'home_team', 'offensive_team', 'defensive_team'
+    ]
+    team_map = {'STL': 'LA', 'SD': 'LAC', 'JAC': 'JAX'}
+    for column in team_columns:
+        df[column] = df[column].map(lambda team: team_map.get(team, team))
+    return df
+
+
+def mark_playoffs(df):
+    df = df.sort_values(['game_id', 'start_quarter', 'start_time'],
+                        ascending=[True, True, False])
+    df['unique_game_flag'] = 0
+    firstplay_mask = (df['start_quarter'] == 1) & (df['start_time'] == '15:00')
+    df.loc[firstplay_mask, 'unique_game_flag'] = 1
+    group_games = df.groupby('season')
+    df['game_in_season'] = group_games['unique_game_flag'].transform('cumsum')
+    df['is_playoffs'] = 0
+    df.loc[df['game_in_season'] > 256, 'is_playoffs'] = 1
     return df
 
 
@@ -140,23 +241,123 @@ def bin_yard_lines(df, binned_column, prefix):
     return df
 
 
-def add_offensive_scores(df):
-    df['points'] = 0
-    df.loc[df['result'] == 'Touchdown', 'points'] = 7
+def mark_offensive_scores(df):
+    """Mark tds, field goals, extra points, and two-point conversions."""
+    df['expected_points'] = 0
+    df['offensive_points'] = 0
+    td_mask = df['result'] == 'Touchdown'
+    field_goal_mask = df['result'] == 'Field Goal'
+    extra_point_mask = df['last_play_desc'].str.contains('extra point is GOOD')
+    two_point_mask = (
+        (df['last_play_desc'].str.contains(r'TWO-POINT CONV.*SUCCEEDS')) &
+        (~df['last_play_desc'].str.contains(r'SUCCEEDS.*REVERSED')) &
+        (~df['last_play_desc'].str.contains(r'SUCCEEDS.*NULLIFIED'))
+    )
+    df.loc[td_mask, 'expected_points'] = 7
+    df.loc[td_mask, 'offensive_points'] += 6
+    df.loc[field_goal_mask, 'offensive_points'] += 3
+    df.loc[extra_point_mask, 'offensive_points'] += 1
+    df.loc[two_point_mask, 'offensive_points'] += 2
+    df['is_touchdown'] = 0
+    df['is_field_goal'] = 0
+    df['is_score'] = 0
+    df.loc[td_mask, 'is_touchdown'] = 1
+    df.loc[field_goal_mask, 'is_field_goal'] = 1
+    df.loc[(td_mask) | (field_goal_mask), 'is_score'] = 1
     return df
 
 
-def subtract_defensive_scores(df):
-    # Alter result of fumble and interceptions that result in defensive TD.
+def mark_dst_scores(df):
+    """Mark tds and safeties. Assume extra point made."""
     int_mask = df['result'] == 'Interception'
     fumble_mask = df['result'] == 'Fumble'
-    td_mask = df['last_play_desc'].str.contains('TOUCHDOWN')
+    td_mask = (
+        (df['result'] != 'Touchdown') &
+        (df['last_play_desc'].str.contains(r'TOUCHDOWN')) &
+        (~df['last_play_desc'].str.contains(r'TOUCHDOWN.*REVERSED')) &
+        (~df['last_play_desc'].str.contains(r'TOUCHDOWN.*NULLIFIED'))
+    )
     safety_mask = df['result'].isin(['Safety', 'Fumble, Safety'])
     df.loc[(int_mask) & (td_mask), 'result'] = 'Interception, Touchdown'
     df.loc[(fumble_mask) & (td_mask), 'result'] = 'Fumble, Touchdown'
-    df.loc[(int_mask) & (td_mask), 'points'] = -7
-    df.loc[(fumble_mask) & (td_mask), 'points'] = -7
-    df.loc[safety_mask, 'points'] = -2
+    df.loc[(int_mask) & (td_mask), 'expected_points'] = -7
+    df.loc[(fumble_mask) & (td_mask), 'expected_points'] = -7
+    df.loc[safety_mask, 'expected_points'] = -2
+    df['dst_points'] = 0
+    df.loc[td_mask, 'dst_points'] += 7 # Assume extra point made...
+    df.loc[safety_mask, 'dst_points'] += 2
+    return df
+
+
+def get_current_score(df):
+    """Get the current score of the drive."""
+    # Initialize series.
+    df['home_points'] = 0
+    df['away_points'] = 0
+    df['offensive_team_score_end'] = 0
+    df['defensive_team_score_end'] = 0
+    df['offensive_team_score_start'] = 0
+    df['defensive_team_score_start'] = 0
+    # Set masks.
+    home_o_mask = df['home_team'] == df['offensive_team']
+    away_o_mask = df['away_team'] == df['offensive_team']
+    home_d_mask = df['home_team'] == df['defensive_team']
+    away_d_mask = df['away_team'] == df['defensive_team']
+    # Mark current drive points.
+    df.loc[home_o_mask, 'home_points'] += df[home_o_mask]['offensive_points']
+    df.loc[home_d_mask, 'home_points'] += df[home_d_mask]['dst_points']
+    df.loc[away_o_mask, 'away_points'] += df[away_o_mask]['offensive_points']
+    df.loc[away_d_mask, 'away_points'] += df[away_d_mask]['dst_points']
+    # Mark score at end of current drive.
+    df['home_score_end'] = (
+        df.groupby('game_id')['home_points'].transform('cumsum')
+    )
+    df['away_score_end'] = (
+        df.groupby('game_id')['away_points'].transform('cumsum')
+    )
+    df.loc[home_o_mask, 'offensive_team_score_end'] = (
+        df[home_o_mask]['home_score_end']
+    )
+    df.loc[away_o_mask, 'offensive_team_score_end'] = (
+        df[away_o_mask]['away_score_end']
+    )
+    df.loc[home_d_mask, 'defensive_team_score_end'] = (
+        df[home_d_mask]['home_score_end']
+    )
+    df.loc[away_d_mask, 'defensive_team_score_end'] = (
+        df[away_d_mask]['away_score_end']
+    )
+    # Mark score at start of current drive.
+    df['home_score_start'] = df['home_score_end'] - df['home_points']
+    df['away_score_start'] = df['away_score_end'] - df['away_points']
+    df['offensive_team_score_start'] = (
+        df['offensive_team_score_end'] - df['offensive_points']
+    )
+    df['defensive_team_score_start'] = (
+        df['defensive_team_score_end'] - df['dst_points']
+    )
+    return df
+
+
+def format_final_scores(df):
+    df['offensive_final_score'] = 0
+    df['defensive_final_score'] = 0
+    home_o_mask = df['home_team'] == df['offensive_team']
+    away_o_mask = df['away_team'] == df['offensive_team']
+    home_d_mask = df['home_team'] == df['defensive_team']
+    away_d_mask = df['away_team'] == df['defensive_team']
+    df.loc[home_o_mask, 'offensive_final_score'] = (
+        df[home_o_mask]['home_final_score']
+    )
+    df.loc[away_o_mask, 'offensive_final_score'] = (
+        df[away_o_mask]['away_final_score']
+    )
+    df.loc[home_d_mask, 'defensive_final_score'] = (
+        df[home_d_mask]['home_final_score']
+    )
+    df.loc[away_d_mask, 'defensive_final_score'] = (
+        df[away_d_mask]['away_final_score']
+    )
     return df
 
 
@@ -165,7 +366,7 @@ def add_field_goal_points(df):
     df.loc[df['result'] == 'Field Goal', 'made_field_goal'] = 1
     field_goal_mask = df['result'].isin(['Field Goal', 'Missed FG', 'Blocked FG', 'Blocked FG, Downs'])
     field_goal_agg = df.loc[field_goal_mask].groupby('end_yard_line_bin')
-    df.loc[field_goal_mask, 'points'] = field_goal_agg['made_field_goal'].transform('mean') * 3
+    df.loc[field_goal_mask, 'expected_points'] = field_goal_agg['made_field_goal'].transform('mean') * 3
     df = df.drop('made_field_goal', axis=1)
     return df
 
@@ -189,17 +390,15 @@ def add_field_position_points(df):
     df = bin_yard_lines(
         df, binned_column='end_opp_expected_start', prefix='end_opp_expected'
     )
-    df['expected_points'] = df['points']
-    nfl_agg = df.groupby('start_yard_line_bin')['points'].mean()
+    nfl_agg = df.groupby('start_yard_line_bin')['expected_points'].mean()
     nfl_agg = nfl_agg.to_dict()
     df['expected_points_opp_from_start'] = df['start_opp_expected_yard_line_bin'].map(nfl_agg)
     df['expected_points_opp_from_end'] = df['end_opp_expected_yard_line_bin'].map(nfl_agg)
     df['field_position_points'] = (
         df['expected_points_opp_from_start'] - df['expected_points_opp_from_end']
     )
-    df['drive_score'] = df['points'] + df['field_position_points']
+    df['drive_score'] = df['expected_points'] + df['field_position_points']
     drop_columns = [
-        'expected_points',
         'start_opp_expected_start',
         'end_opp_expected_start'
     ]

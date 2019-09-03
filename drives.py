@@ -14,8 +14,7 @@ def season_drives_pipeline(season, url):
         url (str) - API URL to pull data from
 
     Returns:
-        season_data (dict) - key = game_id, value = sub_dict; sub_dict keys =
-            completed_game, home_team, home_score, away_team, away_score
+        season_data (dict)
     """
     start, end = format_season_start_end(season)
     season_data = get_drives(start, end, url)
@@ -40,14 +39,14 @@ def get_drives(start, end, url):
         url (str) - API URL to pull data from
 
     Returns:
-        season_drives (dict) - key = game_id, value = sub_dict; sub_dict keys =
-            completed_game, home_team, home_score, away_team, away_score
+        season_drives (dict)
     """
     season_drives = []
     game_date = datetime.strptime(start, '%Y%m%d')
     while game_date <= datetime.strptime(end, '%Y%m%d'):
         in_day_id = 0
         failed = False
+        fail_count = 0
         game_date_str = game_date.strftime('%Y%m%d')
         while not failed and game_date.month in [9, 10, 11, 12, 1, 2]:
             try:
@@ -56,14 +55,15 @@ def get_drives(start, end, url):
                 season_drives.extend(game_drives)
                 in_day_id += 1
             except Exception as e:
-                print(e)
-                failed = True
-                if game_date.weekday() == 6 and in_day_id <= 16:
+                print(e, format_game_id(game_date_str, in_day_id))
+                if game_date.weekday()==6 and in_day_id<=16 and fail_count<5:
+                    fail_count += 1
                     in_day_id += 1
-                    failed = False
-                if game_date.weekday() in [0, 2, 3, 5] and in_day_id <= 5:
+                elif fail_count < 5:
+                    fail_count += 1
                     in_day_id += 1
-                    failed = False
+                else:
+                    failed = True
         game_date += timedelta(days=1)
     return season_drives
 
@@ -107,8 +107,16 @@ def parse_game_drives(game_dict, game_id):
             continue
         offensive_team = drive['posteam']
         defensive_team = home if home != drive['posteam'] else away
-        first_play_key = str(min([int(key) for key in drive['plays'].keys()]))
-        last_play_key = str(max([int(key) for key in drive['plays'].keys()]))
+        try:
+            first_play_key = str(
+                min([int(key) for key in drive['plays'].keys()])
+            )
+            last_play_key = str(
+                max([int(key) for key in drive['plays'].keys()])
+            )
+        except Exception as e:
+            print(e, drive['plays'].keys())
+            continue
         drive_dict = dict(
             game_id=game_id,
             offensive_team=offensive_team,
@@ -127,6 +135,8 @@ def parse_game_drives(game_dict, game_id):
             drive_time=drive['postime'],
             first_play_desc=drive['plays'][first_play_key]['desc'],
             last_play_desc=drive['plays'][last_play_key]['desc'],
+            home_final_score=game['home']['score']['T'],
+            away_final_score=game['away']['score']['T'],
             home_score_diff_last_quarter=format_score_differential(game, drive)
         )
         team_game_drives.append(drive_dict)
@@ -164,11 +174,13 @@ def format_score_differential(game, drive):
 
 
 if __name__ == '__main__':
-    season = 2018
-    drives = season_drives_pipeline(
-        season, 'http://www.nfl.com/liveupdate/game-center/'
-    )
-    json.dump(drives, open('data/%i_drives.json' % season, 'w'))
+    seasons = [2018]
+    for season in seasons:
+        drives = season_drives_pipeline(
+            season, 'http://www.nfl.com/liveupdate/game-center/'
+        )
+        json.dump(drives, open('data/%i_drives.json' % season, 'w'))
+
     # for season in range(2009, 2019):
     #     drives = season_drives_pipeline(
     #         season, 'http://www.nfl.com/liveupdate/game-center/'
