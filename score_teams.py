@@ -12,23 +12,10 @@ def score_drives(start_season, end_season, exclude_playoffs=False,
     df = get_drives(
         start_season, end_season, exclude_playoffs
     )
-    df = postprocess_drives(df)
     df['nfl_avg_score'] = df.groupby('start_yard_line_bin')\
         ['drive_score'].transform('mean')
     df['drive_score'] = df['drive_score'] - df['nfl_avg_score']
-    df['offensive_win'] = (
-        (df['offensive_team'] == df['home_team']).astype(int) *
-        (df['home_final_score'] > df['away_final_score']).astype(int) +
-        (df['offensive_team'] == df['away_team']).astype(int) *
-       ( df['away_final_score'] > df['home_final_score']).astype(int)
-    )
-    df['defensive_win'] = (
-        (df['defensive_team'] == df['home_team']).astype(int) *
-        (df['home_final_score'] > df['away_final_score']).astype(int) +
-        (df['defensive_team'] == df['away_team']).astype(int) *
-       ( df['away_final_score'] > df['home_final_score']).astype(int)
-    )
-    df['tie'] = (df['offensive_win'] + df['defensive_win'] == 0).astype(int)
+    df = opponent_strength_adjustment(df, start_season, end_season)
     if exclude_blowouts:
         df['offensive_differential'] = (
             df['offensive_team_score_start'] - df['defensive_team_score_start']
@@ -60,9 +47,6 @@ def aggregate_game_drives(start_season, end_season, side='offensive_team',
         {'drive_id': 'drive_count', 'drive_time': 'possession_time'}, axis=1
     )
     gdf['avg_drive_time'] = gdf['possession_time'] / gdf['drive_count']
-    gdf = opponent_strength_adjustment(
-        gdf, start_season, end_season, side, other
-    )
     columns = get_side_columns(side)
     gdf = gdf.sort_values(columns, ascending=side == 'defensive_team')
     return gdf
@@ -82,27 +66,27 @@ def aggregate_season_drives(start_season, end_season, side='offensive_team',
     return sdf
 
 
-def opponent_strength_adjustment(gdf, start_season, end_season, side, other,
-                                 n_iters=5, step_size=.2):
+def opponent_strength_adjustment(df, start_season, end_season, n_iters=5,
+                                 step_size=.2):
     # MAKE ADJUSTMENT BASED ON OPPONENT STRENGTH...
-    gdf['offensive_score'] = gdf['drive_score']
-    gdf['defensive_score'] = gdf['drive_score']
-    gdf['adj_offensive_score'] = gdf['drive_score']
-    gdf['adj_defensive_score'] = gdf['drive_score']
+    df['offensive_score'] = df['drive_score']
+    df['defensive_score'] = df['drive_score']
+    df['adj_offensive_score'] = df['drive_score']
+    df['adj_defensive_score'] = df['drive_score']
     for i in range(n_iters):
-        gdf['offensive_adj'] = gdf.groupby(['season', 'defensive_team'])\
+        df['offensive_adj'] = df.groupby(['season', 'defensive_team'])\
             ['adj_defensive_score'].transform('mean')
-        gdf['defensive_adj'] = gdf.groupby(['season', 'offensive_team'])\
+        df['defensive_adj'] = df.groupby(['season', 'offensive_team'])\
             ['adj_offensive_score'].transform('mean')
-        gdf['adj_offensive_score'] = (
-            gdf['adj_offensive_score'] - (step_size * gdf['offensive_adj'])
+        df['adj_offensive_score'] = (
+            df['adj_offensive_score'] - (step_size * df['offensive_adj'])
         )
-        gdf['adj_defensive_score'] = (
-            gdf['adj_defensive_score'] - (step_size * gdf['defensive_adj'])
+        df['adj_defensive_score'] = (
+            df['adj_defensive_score'] - (step_size * df['defensive_adj'])
         )
-    gdf = gdf.drop(['offensive_adj', 'defensive_adj', 'offensive_score',
+    df = df.drop(['offensive_adj', 'defensive_adj', 'offensive_score',
                   'defensive_score'], axis=1)
-    return gdf
+    return df
 
 
 def get_side_columns(side):
@@ -114,12 +98,6 @@ def get_side_columns(side):
 
 
 def get_drives(start_season, end_season, exclude_playoffs):
-    teams = [
-        'PHI', 'ATL', 'BUF', 'BAL', 'CLE', 'PIT', 'IND', 'CIN', 'MIA',
-        'TEN', 'SF', 'MIN', 'HOU', 'NE', 'TB', 'NO', 'NYG', 'JAX', 'gdf',
-        'LAC', 'ARI', 'WAS', 'CAR', 'DAL', 'SEA', 'DEN', 'CHI', 'GB',
-        'DET', 'NYJ', 'LA', 'OAK', 'JAC', 'SD', 'STL'
-    ]
     seasons = list(range(start_season, end_season + 1))
     df = pd.DataFrame()
     for season in seasons:
@@ -127,6 +105,7 @@ def get_drives(start_season, end_season, exclude_playoffs):
         sdf = preprocess_drives(drives, exclude_playoffs)
         sdf['season'] = season
         df = pd.concat((df, sdf))
+    df = postprocess_drives(df)
     return df
 
 
@@ -209,6 +188,7 @@ def postprocess_drives(df):
     # To get decade averages run functions here.
     df = add_field_goal_points(df)
     df = add_field_position_points(df)
+    df = add_win_loss(df)
     return df
 
 
@@ -403,4 +383,21 @@ def add_field_position_points(df):
         'end_opp_expected_start'
     ]
     df = df.drop(drop_columns, axis=1)
+    return df
+
+
+def add_win_loss(df):
+    df['offensive_win'] = (
+        (df['offensive_team'] == df['home_team']).astype(int) *
+        (df['home_final_score'] > df['away_final_score']).astype(int) +
+        (df['offensive_team'] == df['away_team']).astype(int) *
+       ( df['away_final_score'] > df['home_final_score']).astype(int)
+    )
+    df['defensive_win'] = (
+        (df['defensive_team'] == df['home_team']).astype(int) *
+        (df['home_final_score'] > df['away_final_score']).astype(int) +
+        (df['defensive_team'] == df['away_team']).astype(int) *
+       ( df['away_final_score'] > df['home_final_score']).astype(int)
+    )
+    df['tie'] = (df['offensive_win'] + df['defensive_win'] == 0).astype(int)
     return df
