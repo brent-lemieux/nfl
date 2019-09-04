@@ -12,10 +12,6 @@ def score_drives(start_season, end_season, exclude_playoffs=False,
     df = get_drives(
         start_season, end_season, exclude_playoffs
     )
-    df['nfl_avg_score'] = df.groupby('start_yard_line_bin')\
-        ['drive_score'].transform('mean')
-    df['drive_score'] = df['drive_score'] - df['nfl_avg_score']
-    df = opponent_strength_adjustment(df, start_season, end_season)
     if exclude_blowouts:
         df['offensive_differential'] = (
             df['offensive_team_score_start'] - df['defensive_team_score_start']
@@ -24,6 +20,14 @@ def score_drives(start_season, end_season, exclude_playoffs=False,
             ~((np.abs(df['offensive_differential']) >= exclude_blowouts) &
               (df['start_quarter'] == 4))
         ]
+    # Bin seasons.
+    df['season_bin'] = pd.cut(df['season'], 3).map(
+        lambda x: '%s-%s' % (int(x.left), int(x.right))
+    )
+    df['nfl_avg_score'] = df.groupby(['season_bin', 'start_yard_line_bin'])\
+        ['drive_score'].transform('mean')
+    df['drive_score'] = df['drive_score'] - df['nfl_avg_score']
+    df = opponent_strength_adjustment(df, start_season, end_season)
     return df
 
 
@@ -189,6 +193,8 @@ def postprocess_drives(df):
     df = add_field_goal_points(df)
     df = add_field_position_points(df)
     df = add_win_loss(df)
+    df['offense_home'] = df['offensive_team'] == df['home_team']
+    df['defense_home'] = df['defensive_team'] == df['home_team']
     return df
 
 
