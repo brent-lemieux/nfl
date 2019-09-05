@@ -17,7 +17,7 @@ def score_drives(start_season, end_season, exclude_playoffs=False,
             df['offensive_team_score_start'] - df['defensive_team_score_start']
         )
         df = df.loc[
-            ~((np.abs(df['offensive_differential']) >= exclude_blowouts) &
+            ~((df['offensive_differential'] >= exclude_blowouts) &
               (df['start_quarter'] == 4))
         ]
     df['nfl_avg_score'] = df.groupby('start_yard_line_bin')\
@@ -43,8 +43,7 @@ def opponent_strength_adjustment(df, n_iters=5, step_size=.2):
         df['adj_defensive_score'] = (
             df['adj_defensive_score'] - (step_size * df['defensive_adj'])
         )
-    df = df.drop(['offensive_adj', 'defensive_adj', 'offensive_score',
-                  'defensive_score'], axis=1)
+    df = df.drop(['offensive_adj', 'defensive_adj'], axis=1)
     return df
 
 
