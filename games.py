@@ -3,8 +3,10 @@ import json
 import pickle
 import requests
 
+import numpy as np
 
-def extract_season(season, url='http://www.nfl.com/liveupdate/game-center/'):
+
+def season_games_pipeline(season, url):
     """Extract all high-level game data for a season.
 
     Arguments:
@@ -12,63 +14,52 @@ def extract_season(season, url='http://www.nfl.com/liveupdate/game-center/'):
         url (str) - API URL to pull data from
 
     Returns:
-        season_data (dict) - key = game_id, value = sub_dict; sub_dict keys =
-            completed_game, home_team, home_score, away_team, away_score
+        season_data (dict)
     """
-    start, end = format_season_start_end(season)
-    season_data = get_games_data(start, end, url)
+    season_data = get_write_games(season, url)
     return season_data
 
 
 def format_season_start_end(season):
     # Format the start and end date of the season in question.
     start = '{}0901'.format(season)
-    end = '{}0228'.format(season + 1)
+    end = '{}0220'.format(season + 1)
     return start, end
 
 
-def get_games_data(start, end, url):
+def get_write_games(season, url):
     """Get all of the game ids between start and end.
 
     Arguments:
-        start (str) - string representation of date; 'YYYYMMDD';
-            get game ids with a game id date >= start
-        end (str) - string representation of date; 'YYYYMMDD';
-            get game ids with a game id date <= end
+        season (int) - year corresponding to start of season
         url (str) - API URL to pull data from
-
-    Returns:
-        games_data (dict) - key = game_id, value = sub_dict; sub_dict keys =
-            completed_game, home_team, home_score, away_team, away_score
     """
-    games_data = dict()
+    start, end = format_season_start_end(season)
     game_date = datetime.strptime(start, '%Y%m%d')
     while game_date <= datetime.strptime(end, '%Y%m%d'):
         in_day_id = 0
         failed = False
+        fail_count = 0
         game_date_str = game_date.strftime('%Y%m%d')
         while not failed and game_date.month in [9, 10, 11, 12, 1, 2]:
-            game_id = format_game_id(game_date_str, in_day_id)
-            game = requests.get(
-                '{url}{game_id}/{game_id}_gtd.json'.format(
-                    url=url, game_id=game_id
+            try:
+                game_id = format_game_id(game_date_str, in_day_id)
+                game = get_game(game_id, url)
+                json.dump(
+                    game, open('data/%i/%s.json' % (season, game_id), 'w')
                 )
-            )
-            if game.reason == 'Not Found':
-                failed = True
-            else:
-                data = json.loads(game.text)
-                try:
-                    games_data[game_id] = get_game_summary(data[game_id])
-                except Exception as e:
-                    print(game_id)
-            if game_date.weekday() == 6 and in_day_id <= 16:
-                failed = False
-            if game_date.weekday() in [0, 2, 3, 5] and in_day_id <= 5:
-                failed = False
-            in_day_id += 1
+                in_day_id += 1
+            except Exception as e:
+                print(e, format_game_id(game_date_str, in_day_id))
+                if game_date.weekday()==6 and in_day_id<=16 and fail_count<5:
+                    fail_count += 1
+                    in_day_id += 1
+                elif fail_count < 5:
+                    fail_count += 1
+                    in_day_id += 1
+                else:
+                    failed = True
         game_date += timedelta(days=1)
-    return games_data
 
 
 def format_game_id(game_date_str, in_day_id):
@@ -86,19 +77,19 @@ def format_game_id(game_date_str, in_day_id):
     return game_date_str + game_date_id
 
 
-def get_game_summary(data):
-    completed_game = data['qtr'] == 'Final'
-    game_data = dict(
-        completed_game=completed_game,
-        home_team=data['home']['abbr'],
-        home_score=data['home']['score'],
-        away_team=data['away']['abbr'],
-        away_score=data['away']['score']
+def get_game(game_id, url):
+    # Request game data from NFL Game Center API.
+    game = requests.get(
+        '{url}{game_id}/{game_id}_gtd.json'.format(url=url, game_id=game_id)
     )
-    return game_data
+    if game.reason == 'Not Found':
+        raise Exception('Game ID {} not found.'.format(game_id))
+    game_dict = json.loads(game.text)
+    return game_dict
 
 
 if __name__ == '__main__':
-    for i in range(2010, 2018):
-        games = extract_season(i)
-        json.dump(games, open('data/%i_games_dict.json' % i, 'w'))
+    for season in range(2009, 2019):
+        season_games_pipeline(
+            season, 'http://www.nfl.com/liveupdate/game-center/'
+        )
