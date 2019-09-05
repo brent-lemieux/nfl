@@ -7,7 +7,7 @@ import pandas as pd
 
 
 def score_drives(start_season, end_season, exclude_playoffs=False,
-                 exclude_blowouts=False):
+                 exclude_blowouts=False, opponent_adjustment=True):
     """Score each drive from start_season to end_season."""
     df = get_drives(
         start_season, end_season, exclude_playoffs
@@ -17,64 +17,19 @@ def score_drives(start_season, end_season, exclude_playoffs=False,
             df['offensive_team_score_start'] - df['defensive_team_score_start']
         )
         df = df.loc[
-            ~((np.abs(df['offensive_differential']) >= exclude_blowouts) &
+            ~((df['offensive_differential'] >= exclude_blowouts) &
               (df['start_quarter'] == 4))
         ]
-    # Bin seasons.
-    df['season_bin'] = pd.cut(df['season'], 3).map(
-        lambda x: '%s-%s' % (int(x.left), int(x.right))
-    )
-    df['nfl_avg_score'] = df.groupby(['season_bin', 'start_yard_line_bin'])\
+    df['nfl_avg_score'] = df.groupby('start_yard_line_bin')\
         ['drive_score'].transform('mean')
     df['drive_score'] = df['drive_score'] - df['nfl_avg_score']
-    df = opponent_strength_adjustment(df, start_season, end_season)
+    if opponent_adjustment:
+        df = opponent_strength_adjustment(df)
     return df
 
 
-def aggregate_game_drives(start_season, end_season, side='offensive_team',
-                          exclude_playoffs=False, exclude_blowouts=False):
-    """Score each game by aggregating drive scores by game_id and team."""
-    df = score_drives(
-        start_season, end_season, exclude_playoffs, exclude_blowouts
-    )
-    other = 'defensive_team' if side == 'offensive_team' else 'offensive_team'
-    groupby_list = ['game_id', side, other, 'home_team', 'away_team', 'season']
-    aggregate_list = ['drive_score', 'home_final_score', 'away_final_score',
-                      'offensive_win', 'defensive_win', 'tie']
-    gdf = df.groupby(groupby_list, as_index=False).agg(
-        {'drive_score': 'mean', 'home_final_score': 'mean',
-         'away_final_score': 'mean', 'offensive_win': 'mean',
-         'defensive_win': 'mean', 'tie': 'mean', 'is_touchdown': 'mean',
-         'drive_time': 'sum', 'drive_id': 'count'}
-    )
-    gdf = gdf.rename(
-        {'drive_id': 'drive_count', 'drive_time': 'possession_time'}, axis=1
-    )
-    gdf['avg_drive_time'] = gdf['possession_time'] / gdf['drive_count']
-    columns = get_side_columns(side)
-    gdf = gdf.sort_values(columns, ascending=side == 'defensive_team')
-    return gdf
-
-
-def aggregate_season_drives(start_season, end_season, side='offensive_team',
-                            exclude_playoffs=False, exclude_blowouts=False):
-    """Score each season by aggregating game drive scores by season and
-    team."""
-    gdf = aggregate_game_drives(start_season, end_season, side,
-                                exclude_playoffs, exclude_blowouts)
-    columns = get_side_columns(side)
-    sdf = gdf.groupby(['season', side], as_index=False)[columns].mean()
-    sdf = sdf.sort_values(
-        columns, ascending=side == 'defensive_team'
-    )
-    return sdf
-
-
-def opponent_strength_adjustment(df, start_season, end_season, n_iters=5,
-                                 step_size=.2):
+def opponent_strength_adjustment(df, n_iters=5, step_size=.2):
     # MAKE ADJUSTMENT BASED ON OPPONENT STRENGTH...
-    df['offensive_score'] = df['drive_score']
-    df['defensive_score'] = df['drive_score']
     df['adj_offensive_score'] = df['drive_score']
     df['adj_defensive_score'] = df['drive_score']
     for i in range(n_iters):
@@ -88,8 +43,7 @@ def opponent_strength_adjustment(df, start_season, end_season, n_iters=5,
         df['adj_defensive_score'] = (
             df['adj_defensive_score'] - (step_size * df['defensive_adj'])
         )
-    df = df.drop(['offensive_adj', 'defensive_adj', 'offensive_score',
-                  'defensive_score'], axis=1)
+    df = df.drop(['offensive_adj', 'defensive_adj'], axis=1)
     return df
 
 
@@ -257,6 +211,10 @@ def mark_dst_scores(df):
     """Mark tds and safeties. Assume extra point made."""
     int_mask = df['result'] == 'Interception'
     fumble_mask = df['result'] == 'Fumble'
+    df['is_interception'] = 0
+    df.loc[int_mask, 'is_interception'] = 1
+    df['is_fumble'] = 0
+    df.loc[fumble_mask, 'is_fumble'] = 1
     td_mask = (
         (df['result'] != 'Touchdown') &
         (df['last_play_desc'].str.contains(r'TOUCHDOWN')) &
