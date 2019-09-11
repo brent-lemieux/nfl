@@ -6,7 +6,7 @@ import requests
 import numpy as np
 
 
-def season_games_pipeline(season, url):
+def season_games_pipeline(season, url, months=[9, 10, 11, 12, 1, 2]):
     """Extract all high-level game data for a season.
 
     Arguments:
@@ -16,7 +16,7 @@ def season_games_pipeline(season, url):
     Returns:
         season_data (dict)
     """
-    season_data = get_write_games(season, url)
+    season_data = get_write_games(season, url, months)
     return season_data
 
 
@@ -27,7 +27,7 @@ def format_season_start_end(season):
     return start, end
 
 
-def get_write_games(season, url):
+def get_write_games(season, url, months):
     """Get all of the game ids between start and end.
 
     Arguments:
@@ -41,7 +41,7 @@ def get_write_games(season, url):
         failed = False
         fail_count = 0
         game_date_str = game_date.strftime('%Y%m%d')
-        while not failed and game_date.month in [9, 10, 11, 12, 1, 2]:
+        while not failed and game_date.month in months:
             try:
                 game_id = format_game_id(game_date_str, in_day_id)
                 game = get_game(game_id, url)
@@ -89,7 +89,9 @@ def get_game(game_id, url):
 
 
 if __name__ == '__main__':
-    for season in range(2009, 2019):
+    # months = [9, 10, 11, 12, 1, 2]
+    months = [9]
+    for season in range(2019, 2020):
         season_games_pipeline(
-            season, 'http://www.nfl.com/liveupdate/game-center/'
+            season, 'http://www.nfl.com/liveupdate/game-center/', months
         )

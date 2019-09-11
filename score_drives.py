@@ -5,19 +5,22 @@ import json
 import numpy as np
 import pandas as pd
 
+from parse_games import game_data_pipeline
 
-def score_drives(start_season, end_season, exclude_playoffs=False,
-                 exclude_blowouts=False, opponent_adjustment=True):
+
+def get_drive_stats(start_season, end_season, exclude_playoffs=False,
+                    exclude_blowouts=False, opponent_adjustment=True,
+                    data_path='/home/jovyan/work/data'):
     """Score each drive from start_season to end_season."""
     df = get_drives(
-        start_season, end_season, exclude_playoffs
+        start_season, end_season, exclude_playoffs, data_path
     )
     if exclude_blowouts:
         df['offensive_differential'] = (
             df['offensive_team_score_start'] - df['defensive_team_score_start']
         )
         df = df.loc[
-            ~((df['offensive_differential'] >= exclude_blowouts) &
+            ~((np.abs(df['offensive_differential']) >= exclude_blowouts) &
               (df['start_quarter'] == 4))
         ]
     df['nfl_avg_score'] = df.groupby('start_yard_line_bin')\
@@ -55,21 +58,14 @@ def get_side_columns(side):
     return columns
 
 
-def get_drives(start_season, end_season, exclude_playoffs):
-    seasons = list(range(start_season, end_season + 1))
-    df = pd.DataFrame()
-    for season in seasons:
-        drives = json.load(open('./data/%i_drives.json' % season, 'r'))
-        sdf = preprocess_drives(drives, exclude_playoffs)
-        sdf['season'] = season
-        df = pd.concat((df, sdf))
-    df = postprocess_drives(df)
+def get_drives(start_season, end_season, exclude_playoffs, data_path):
+    df = game_data_pipeline(start_season, end_season, data_path)
+    df = preprocess_drives(df, exclude_playoffs)
     return df
 
 
-def preprocess_drives(drives, exclude_playoffs):
+def preprocess_drives(df, exclude_playoffs):
     """Preprocess drives for analysis."""
-    df = pd.DataFrame(drives)
     df['drive_id'] = df.index
     df['season'] = df['game_id'].map(get_season)
 
@@ -95,17 +91,46 @@ def preprocess_drives(drives, exclude_playoffs):
     df = mark_offensive_scores(df)
     df = mark_dst_scores(df)
     df = get_current_score(df)
-
-    df['drive_time'] = df['drive_time'].map(convert_drive_time)
     df = format_final_scores(df)
+    df = add_field_goal_points(df)
+    df = add_field_position_points(df)
+    df = add_win_loss(df)
+
+    df = handle_drive_time(df)
+
+    df['offense_home'] = df['offensive_team'] == df['home_team']
+    df['defense_home'] = df['defensive_team'] == df['home_team']
     return df
 
 
-def convert_drive_time(drive_time):
+def handle_drive_time(df):
+    df['drive_time'] = df['drive_time'].map(convert_game_time)
+    df['start_time'] = df['start_time'].map(convert_game_time)
+    df['end_time'] = df['end_time'].map(convert_game_time)
+    for quarter in range(1, 6):
+        quarter_time_func = partial(quarter_possession_time, quarter=quarter)
+        df['%i_quarter_time' % quarter] = df.apply(quarter_time_func, axis=1)
+    return df
+
+
+def convert_game_time(drive_time):
     if drive_time:
         minutes, seconds = [int(t) for t in drive_time.split(':')]
         return minutes + seconds / 60
     return None
+
+
+def quarter_possession_time(row, quarter=1):
+    if row['start_quarter'] == row['end_quarter'] == quarter:
+        return row['drive_time']
+    if quarter not in (row['start_quarter'], row['end_quarter']):
+        return 0
+    if quarter == row['start_quarter']:
+        return row['start_time']
+    if quarter == row['end_quarter']:
+        return 15 - row['end_time']
+
+
 
 
 def get_season(game_id):
@@ -139,16 +164,6 @@ def mark_playoffs(df):
     df['game_in_season'] = group_games['unique_game_flag'].transform('cumsum')
     df['is_playoffs'] = 0
     df.loc[df['game_in_season'] > 256, 'is_playoffs'] = 1
-    return df
-
-
-def postprocess_drives(df):
-    # To get decade averages run functions here.
-    df = add_field_goal_points(df)
-    df = add_field_position_points(df)
-    df = add_win_loss(df)
-    df['offense_home'] = df['offensive_team'] == df['home_team']
-    df['defense_home'] = df['defensive_team'] == df['home_team']
     return df
 
 
