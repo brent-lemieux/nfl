@@ -9,12 +9,17 @@ from parse_games import game_data_pipeline
 
 
 def get_drive_stats(start_season, end_season, exclude_playoffs=False,
-                    exclude_blowouts=False, opponent_adjustment=True,
+                    exclude_blowouts=False, dpa_scores=False,
+                    opponent_adjustment=False,
                     data_path='/home/jovyan/work/data'):
     """Score each drive from start_season to end_season."""
     df = get_drives(
         start_season, end_season, exclude_playoffs, data_path
     )
+    if dpa_scores:
+        df = postprocess_drives(df)
+        if opponent_adjustment:
+            df = opponent_strength_adjustment(df)
     if exclude_blowouts:
         df['offensive_differential'] = (
             df['offensive_team_score_start'] - df['defensive_team_score_start']
@@ -23,11 +28,6 @@ def get_drive_stats(start_season, end_season, exclude_playoffs=False,
             ~((np.abs(df['offensive_differential']) >= exclude_blowouts) &
               (df['start_quarter'] == 4))
         ]
-    df['nfl_avg_score'] = df.groupby('start_yard_line_bin')\
-        ['drive_score'].transform('mean')
-    df['drive_score'] = df['drive_score'] - df['nfl_avg_score']
-    if opponent_adjustment:
-        df = opponent_strength_adjustment(df)
     return df
 
 
@@ -75,11 +75,23 @@ def preprocess_drives(df, exclude_playoffs):
         df =  df.drop(['home_score', 'away_score'], axis=1)
 
     df = clean_games(df)
-
     df = mark_playoffs(df)
     if exclude_playoffs:
         df = df.loc[df['is_playoffs'] == 0].copy()
 
+    df = mark_offensive_scores(df)
+    df = mark_dst_scores(df)
+    df = get_current_score(df)
+    df = format_final_scores(df)
+    df = add_win_loss(df)
+    df = handle_drive_time(df)
+
+    df['offense_home'] = df['offensive_team'] == df['home_team']
+    df['defense_home'] = df['defensive_team'] == df['home_team']
+    return df
+
+
+def postprocess_drives(df):
     df['total_yards'] = df['penalty_yards'] + df['yards_gained']
     df['end_yard_line'] = df['start_yard_line'] + df['total_yards']
     df = get_next_opponent_drive(df)
@@ -87,19 +99,11 @@ def preprocess_drives(df, exclude_playoffs):
     df = bin_yard_lines(df, binned_column='start_yard_line', prefix='start')
     df = bin_yard_lines(df, binned_column='end_yard_line', prefix='end')
     df = bin_yard_lines(df, binned_column='next_start_yard_line', prefix='next_start')
-
-    df = mark_offensive_scores(df)
-    df = mark_dst_scores(df)
-    df = get_current_score(df)
-    df = format_final_scores(df)
     df = add_field_goal_points(df)
     df = add_field_position_points(df)
-    df = add_win_loss(df)
-
-    df = handle_drive_time(df)
-
-    df['offense_home'] = df['offensive_team'] == df['home_team']
-    df['defense_home'] = df['defensive_team'] == df['home_team']
+    df['nfl_avg_score'] = df.groupby('start_yard_line_bin')\
+        ['drive_score'].transform('mean')
+    df['drive_score'] = df['drive_score'] - df['nfl_avg_score']
     return df
 
 
@@ -151,7 +155,14 @@ def clean_games(df):
     team_map = {'STL': 'LA', 'SD': 'LAC', 'JAC': 'JAX'}
     for column in team_columns:
         df[column] = df[column].map(lambda team: team_map.get(team, team))
+    df['game_date'] = df['game_id'].map(get_game_date)
+    df['game_date'] = pd.to_datetime(df['game_date'], format='%Y%m%d')
+    df['day_of_week'] = df['game_date'].dt.day_name()
     return df
+
+
+def get_game_date(game_id):
+    return game_id[:8]
 
 
 def mark_playoffs(df):
